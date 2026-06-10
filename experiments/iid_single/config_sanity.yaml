@@ -35,7 +35,7 @@ batch_size: 512
 
 dsm_sigma_rho: 0.1
 two_branch_warmup_frac: 0.1
-two_branch_u_hidden: [32, 32]
+two_branch_u_hidden: [16]
 
 lfi_delta_theta: 0.01
 lfi_sigma_cutoff: 0.001
