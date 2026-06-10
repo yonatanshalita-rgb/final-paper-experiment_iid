@@ -33,7 +33,7 @@ rho_list: [
 n_fixed_for_rho: 2000           # n used for the vs-rho sweep
 
 # ----- metric operating points -----
-pfa: 0.01                      # Pd @ this Pfa
+pfa: 0.1                       # Pd @ this Pfa
 pauc_fpr: 0.1                  # partial AUC over Pfa < this
 
 # ----- score network architecture (DSM + LRao share this) -----
