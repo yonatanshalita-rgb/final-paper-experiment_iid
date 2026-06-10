@@ -641,7 +641,7 @@ def run_iid(cfg: dict, mode: str):
             metrics['vs_n'][det]['pauc'].append(pa)
             metrics['vs_n'][det]['pd'].append(pd)
             store[f'vsN/{det}_n{n}'] = np.asarray(sc, np.float32)
-        line = "  ".join(f"{d}={metrics['vs_n'][d]['auc'][-1]:.3f}" for d in DETS)
+        line = "  ".join(f"{d}  AUC={metrics['vs_n'][d]['auc'][-1]:.3f}  Pd={metrics['vs_n'][d]['pd'][-1]:.3f}" for d in DETS)
         print(f"  n={n:>4}  ({time.time()-t0:.0f}s)  AUC: {line}", flush=True)
         json.dump(metrics, open(os.path.join(run_dir, 'metrics.json'), 'w'),
                   indent=2, default=str)
@@ -697,7 +697,7 @@ def run_iid(cfg: dict, mode: str):
             metrics['vs_rho'][det]['auc'].append(au)
             metrics['vs_rho'][det]['pd'].append(pd)
             store[f'vsRho/{det}_rho{rho}'] = np.asarray(sc, np.float32)
-        dsm_aucs = "  ".join(f"{n}={metrics['vs_rho'][n]['auc'][-1]:.3f}"
+        dsm_aucs = "  ".join(f"{n}  AUC={metrics['vs_rho'][n]['auc'][-1]:.3f}  Pd={metrics['vs_rho'][n]['pd'][-1]:.3f}"
                              for n in _dsm_names + ['TwoBranch'])
         print(f"  ρ={rho:<6}  ({time.time()-t0:.0f}s)  {dsm_aucs}", flush=True)
         json.dump(metrics, open(os.path.join(run_dir, 'metrics.json'), 'w'),

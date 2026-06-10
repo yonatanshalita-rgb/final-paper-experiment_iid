@@ -16,7 +16,7 @@ n_train_list: [100, 500, 2000]
 rho_list: [0.01, 0.1, 1.0]
 n_fixed_for_rho: 500
 
-pfa: 0.1
+pfa: 0.01
 pauc_fpr: 0.1
 
 hidden_dims: []
