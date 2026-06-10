@@ -56,6 +56,10 @@ batch_size: 512
 # ----- DSM specifics -----
 dsm_sigma_rho: 0.1            # fixed rho for the vs-n sweep; sigma=sqrt(rho) (whitened)
 
+# ----- TwoBranch specifics -----
+two_branch_warmup_frac: 0.1   # freeze u-MLP for first 10% of epochs
+two_branch_u_hidden: [32, 32] # u-MLP hidden dims
+
 # ----- LRao Mode-2 specifics -----
 lfi_delta_theta: 0.01
 lfi_sigma_cutoff: 0.001

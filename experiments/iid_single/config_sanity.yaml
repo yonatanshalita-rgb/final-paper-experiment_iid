@@ -1,0 +1,48 @@
+dataset: data/pavia-u.mat
+norm_mode: none
+whiten_mode: zca
+whiten_eig_floor: 0
+lrao_whiten_eig_floor: 0.01
+
+bkg_cls: 2
+target_cls: 4
+exclude_classes: []
+
+amplitude: 0.15
+target_fraction: 0.10
+test_size: 2000
+
+n_train_list: [100, 500, 2000]
+rho_list: [0.01, 0.1, 1.0]
+n_fixed_for_rho: 500
+
+pfa: 0.1
+pauc_fpr: 0.1
+
+hidden_dims: []
+activation: silu
+dsm_label: "LDSM"
+hidden_dims_2: [128]
+activation_2: relu
+dsm2_label: "DSM"
+
+dsm_epochs: 500
+lrao_epochs: 50
+
+lr: 0.0005
+weight_decay: 0.00005
+batch_size: 512
+
+dsm_sigma_rho: 0.1
+two_branch_warmup_frac: 0.1
+two_branch_u_hidden: [32, 32]
+
+lfi_delta_theta: 0.01
+lfi_sigma_cutoff: 0.001
+lfi_detach_sigma: false
+
+gmm_K: 2
+
+seed: 42
+
+results_dir: experiments/iid_single/results_sanity

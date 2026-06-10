@@ -73,7 +73,8 @@ from final_paper_experiments.baselines.detectors import (
 )
 from final_paper_experiments.baselines.gmm_glrt_levin import gmm_glrt_levin_additive
 from dsm_model import (
-    ScoreNet, Whitening, dsm_loss, lfi_loss_mode2, compute_lfi_detector_scores_mode2,
+    ScoreNet, TwoBranchScore, Whitening, dsm_loss,
+    lfi_loss_mode2, compute_lfi_detector_scores_mode2,
 )
 
 
@@ -191,6 +192,52 @@ def train_dsm_local(train_raw: np.ndarray, cfg: dict,
         pbar.set_postfix(loss=f"{hist[-1]:.2f}",
                          ratio=f"{hist[-1] / baseline:.3f}")
     model.cpu().eval()   # move back to CPU so scoring helpers get numpy-compatible model
+    return model, hist
+
+
+def train_two_branch_local(train_raw: np.ndarray, cfg: dict,
+                           seed: int, label: str) -> Tuple[TwoBranchScore, List[float]]:
+    """Two-branch DSM on RAW bands with a frozen ZCA whitening front-end.
+
+    Architecture (in whitened space): psi(y) = u(||Ay_w||^2) * (-A^T A y_w),
+    with output mapped back to data space for detection.  Warmup: freeze the
+    u-MLP for the first `two_branch_warmup_frac` fraction of epochs so the
+    W-branch (linear covariance estimate) stabilises before scalar adaptation.
+    Sigma schedule: same as DSM — sigma = sqrt(rho) in whitened space.
+    """
+    torch.manual_seed(seed)
+    device  = torch.device(cfg.get('device', 'cpu'))
+    D       = train_raw.shape[1]
+    W       = _make_whitening(train_raw, cfg)
+    sigma   = float(np.sqrt(cfg['dsm_sigma_rho']))
+    u_dims  = list(cfg.get('two_branch_u_hidden', [32, 32]))
+    model   = TwoBranchScore(D, u_hidden_dims=u_dims, whitening=W).to(device)
+    opt     = torch.optim.Adam(model.parameters(), lr=cfg['lr'],
+                                weight_decay=cfg['weight_decay'])
+    X       = torch.tensor(np.asarray(train_raw, dtype=np.float32)).to(device)
+    N, bs   = len(X), min(cfg['batch_size'], len(X))
+    epochs  = int(cfg['dsm_epochs'])
+    warmup  = int(cfg.get('two_branch_warmup_frac', 0.1) * epochs)
+    baseline = D / (sigma ** 2)
+    hist    = []
+
+    pbar = tqdm(range(1, epochs + 1), desc=f'TwoBranch {label}',
+                dynamic_ncols=True, leave=False)
+    for ep in pbar:
+        # freeze u_mlp during warmup so W-branch learns covariance first
+        for p in model.u_mlp.parameters():
+            p.requires_grad = (ep > warmup)
+
+        perm = torch.randperm(N); tot = 0.0; nb = 0
+        for i in range(0, N, bs):
+            b    = X[perm[i:i + bs]]
+            loss = dsm_loss(model, b, sigma)
+            opt.zero_grad(); loss.backward(); opt.step()
+            tot += loss.item(); nb += 1
+        hist.append(tot / max(nb, 1))
+        pbar.set_postfix(loss=f"{hist[-1]:.2f}",
+                         ratio=f"{hist[-1] / baseline:.3f}")
+    model.cpu().eval()
     return model, hist
 
 
@@ -319,15 +366,16 @@ def run_classical_additive(train_raw, test_planted, s_raw, reg_sigma, cfg, mode)
 # ---------------------------------------------------------------------------
 
 DETECTOR_COLORS = {
-    'AMF':       '#1f77b4',
-    'GMM-Levin': '#9467bd',
-    'DLTD':      '#e6550d',   # orange
-    'SMGLRT':    '#8c564b',   # brown
-    'DSM':       '#d62728',   # red   — nonlinear DSM
-    'LDSM':      '#9b2226',   # dark red — linear DSM
-    'DSM-lin':   '#9b2226',   # dark red  — legacy alias
-    'DSM-MLP':   '#e07070',   # light red — legacy alias
-    'LRao':      '#2ca02c',
+    'AMF':        '#1f77b4',
+    'GMM-Levin':  '#9467bd',
+    'DLTD':       '#e6550d',   # orange
+    'SMGLRT':     '#8c564b',   # brown
+    'DSM':        '#d62728',   # red   — nonlinear DSM
+    'LDSM':       '#9b2226',   # dark red — linear DSM
+    'DSM-lin':    '#9b2226',   # dark red  — legacy alias
+    'DSM-MLP':    '#e07070',   # light red — legacy alias
+    'LRao':       '#2ca02c',
+    'TwoBranch':  '#8B0000',   # dark red — two-branch DSM
 }
 
 
@@ -524,7 +572,7 @@ def run_iid(cfg: dict, mode: str):
         _dsm2_label = cfg.get('dsm2_label', 'DSM-MLP' if _h2 else 'DSM-lin')
         _dsm_names.append(_dsm2_label)
 
-    DETS = _cls + _dsm_names + ['LRao']
+    DETS = _cls + _dsm_names + ['LRao', 'TwoBranch']
     loss_curves: Dict[str, list] = {}
     metrics = {
         'n_list': n_list, 'rho_list': rho_list, 'n_fixed': n_fixed,
@@ -550,7 +598,7 @@ def run_iid(cfg: dict, mode: str):
         """Train all DSM variants + LRao on train_raw_n; return score dict."""
         scores = {}
         # --- primary DSM ---
-        scores['DSM'] = _train_dsm_variant(train_raw_n, cfg_rho, 'DSM', tag)
+        scores[_dsm1_label] = _train_dsm_variant(train_raw_n, cfg_rho, _dsm1_label, tag)
         # --- secondary DSM (if configured) ---
         if len(_dsm_names) > 1:
             label2 = _dsm_names[1]
@@ -567,6 +615,15 @@ def run_iid(cfg: dict, mode: str):
                                lambda: score_lrao(lrao_net, train_raw_n, test_planted,
                                                   s_raw, cfg),
                                len(labels))
+        # --- TwoBranch ---
+        tb_net, h_tb = train_two_branch_local(train_raw_n, cfg_rho, seed, f'TwoBranch_{tag}')
+        loss_curves[f'TwoBranch_{tag}'] = h_tb
+        torch.save({'state_dict': tb_net.state_dict(), 'tag': tag},
+                   os.path.join(mdl_dir, f'TwoBranch_{tag}.pt'))
+        scores['TwoBranch'] = _safe(f'TwoBranch {tag}',
+                                    lambda: score_dsm_add(tb_net, train_raw_n,
+                                                          test_planted, s_raw),
+                                    len(labels))
         return scores
 
     # ------------------------------------------------------------------ vs n
@@ -618,13 +675,22 @@ def run_iid(cfg: dict, mode: str):
         t0 = time.time()
         cfg_rho = {**cfg, 'dsm_sigma_rho': float(rho)}
         tag_rho = f'rho{rho}_n{n_fixed}'
-        dsm_scores_rho = {'DSM': _train_dsm_variant(tr_f, cfg_rho, 'DSM', tag_rho)}
+        dsm_scores_rho = {_dsm1_label: _train_dsm_variant(tr_f, cfg_rho, _dsm1_label, tag_rho)}
         if len(_dsm_names) > 1:
             label2 = _dsm_names[1]
             cfg2 = {**cfg_rho,
                     'hidden_dims': list(cfg['hidden_dims_2']),
                     'activation':  cfg.get('activation_2', cfg['activation'])}
             dsm_scores_rho[label2] = _train_dsm_variant(tr_f, cfg2, label2, tag_rho)
+        tb_net_rho, h_tb_rho = train_two_branch_local(tr_f, cfg_rho, seed,
+                                                       f'TwoBranch_{tag_rho}')
+        loss_curves[f'TwoBranch_{tag_rho}'] = h_tb_rho
+        torch.save({'state_dict': tb_net_rho.state_dict(), 'tag': tag_rho},
+                   os.path.join(mdl_dir, f'TwoBranch_{tag_rho}.pt'))
+        dsm_scores_rho['TwoBranch'] = _safe(
+            f'TwoBranch vsρ rho={rho}',
+            lambda m=tb_net_rho: score_dsm_add(m, tr_f, test_planted, s_raw),
+            len(labels))
         det_scores = {**flat, **dsm_scores_rho}
         for det, sc in det_scores.items():
             au, _, pd = _mtr(sc)

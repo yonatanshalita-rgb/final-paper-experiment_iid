@@ -262,6 +262,83 @@ class ScoreNet(nn.Module):
 
 
 
+class _TwoBranchInner(nn.Module):
+    """Two-branch inner network operating in (already-whitened) space.
+
+    psi_w(x_w) = u(||Ax_w||^2) * (-A^T A x_w)
+
+    This module is stored as TwoBranchScore.net so that the shared dsm_loss
+    helper (which calls model.whiten + model.net) works unchanged.
+    """
+
+    def __init__(self, input_dim: int, u_hidden_dims: list):
+        super().__init__()
+        self.A = nn.Parameter(torch.eye(input_dim) / input_dim ** 0.5)
+
+        layers = []
+        in_dim = 1
+        for h in u_hidden_dims:
+            layers += [nn.Linear(in_dim, h), nn.Tanh()]
+            in_dim = h
+        layers.append(nn.Linear(in_dim, 1))
+        self.u_mlp = nn.Sequential(*layers)
+
+        nn.init.zeros_(self.u_mlp[-1].weight)
+        nn.init.zeros_(self.u_mlp[-1].bias)
+
+    def forward(self, x_w: torch.Tensor) -> torch.Tensor:
+        z   = x_w @ self.A.T                                    # (..., D)
+        v   = -(z @ self.A)                                     # (..., D)
+        d   = (z * z).sum(dim=-1, keepdim=True)                 # (..., 1)
+        u   = torch.nn.functional.softplus(self.u_mlp(d))      # (..., 1)
+        return u * v                                            # (..., D)
+
+
+class TwoBranchScore(nn.Module):
+    """Two-branch DSM score model with optional frozen ZCA whitening front-end.
+
+    Architecture (in whitened space):
+        x_w   = W(y)                          frozen whitening
+        z     = A x_w                         learnable linear map
+        v     = -A^T z = -A^T A x_w           W-branch output
+        d     = ||z||^2                        Mahalanobis proxy
+        u     = softplus(MLP(d))               u-branch scalar weight
+        psi_w = u * v                          score in whitened space
+        psi   = psi_w @ W                     back to DATA SPACE  (chain rule)
+
+    By varying DSM noise sigma the model interpolates between:
+      sigma -> 0   : t-Rao  (exact t-score is in the scalar-weight class)
+      sigma = 0.3  : tracks t-GLRT  (L2-projection of q_sigma score)
+      sigma -> inf : Gaussian AMF   (isotropic, no tail weighting)
+
+    `model.net` is the inner _TwoBranchInner so `dsm_loss` works unchanged.
+    `model.u_mlp` is exposed for warmup (freeze u-branch while W-branch trains).
+    """
+
+    def __init__(self, input_dim: int, u_hidden_dims: list = None,
+                 whitening: "Whitening" = None):
+        super().__init__()
+        if u_hidden_dims is None:
+            u_hidden_dims = [32, 32]
+        self.net       = _TwoBranchInner(input_dim, u_hidden_dims)
+        self.whitening = whitening
+        # expose u_mlp at top level so training code can freeze it during warmup
+        self.u_mlp     = self.net.u_mlp
+
+    def whiten(self, x: torch.Tensor) -> torch.Tensor:
+        return self.whitening(x) if self.whitening is not None else x
+
+    def to_data_space(self, score_w: torch.Tensor) -> torch.Tensor:
+        return score_w @ self.whitening.W if self.whitening is not None else score_w
+
+    def forward(self, y: torch.Tensor) -> torch.Tensor:
+        """Returns DATA-SPACE score (compatible with dsm_additive / s_raw)."""
+        return self.to_data_space(self.net(self.whiten(y)))
+
+    def n_params(self):
+        return sum(p.numel() for p in self.parameters())
+
+
 def dsm_loss(model: ScoreNet, batch: torch.Tensor, sigma,
              weighted: bool = False) -> torch.Tensor:
     """DSM objective: E[||ψ_η(w̃) - (w - w̃)/Σ_n||²] where w̃ = w + ε, ε ~ N(0,Σ_n).
