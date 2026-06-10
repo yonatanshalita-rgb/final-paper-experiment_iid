@@ -698,7 +698,7 @@ def run_iid(cfg: dict, mode: str):
             metrics['vs_rho'][det]['pd'].append(pd)
             store[f'vsRho/{det}_rho{rho}'] = np.asarray(sc, np.float32)
         dsm_aucs = "  ".join(f"{n}={metrics['vs_rho'][n]['auc'][-1]:.3f}"
-                             for n in _dsm_names)
+                             for n in _dsm_names + ['TwoBranch'])
         print(f"  ρ={rho:<6}  ({time.time()-t0:.0f}s)  {dsm_aucs}", flush=True)
         json.dump(metrics, open(os.path.join(run_dir, 'metrics.json'), 'w'),
                   indent=2, default=str)
